@@ -1,13 +1,12 @@
 {
   "version": 2,
   "builds": [
-    { "src": "server.js", "use": "@vercel/node" },
-    { "src": "index.html", "use": "@vercel/static" }
+    { "src": "server.js", "use": "@vercel/node" }
   ],
   "routes": [
     { "src": "/api/mask", "dest": "/server.js" },
     { "src": "/api/overlay", "dest": "/server.js" },
     { "src": "/overlay", "dest": "/server.js" },
-    { "src": "/", "dest": "/index.html" }
+    { "src": "/", "dest": "/server.js" }
   ]
 }

@@ -6,10 +6,6 @@ import sharp from 'sharp';
 const app = express();
 app.use(cors());
 app.use(express.json());
-// Serve static files (including index.html) for local dev
-if (process.env.VERCEL !== '1') {
-  app.use(express.static('.'));
-}
 
 // (no-op utility section)
 
@@ -185,10 +181,17 @@ async function overlayHandler(req, res) {
 app.get('/api/overlay', overlayHandler);
 app.get('/overlay', overlayHandler); // alias for convenience
 
-// Serve the client (optional)
+// API Root
 app.get('/', (req, res) => {
-  res.setHeader('content-type', 'text/html');
-  res.send(`<!doctype html><html><body><p>GIS Sentinel API running. Try <code>/api/mask?state=Odisha</code></p></body></html>`);
+  res.json({
+    name: 'GIS Sentinel Overlay API',
+    endpoints: [
+      '/overlay?state=Odisha',
+      '/overlay?state=Odisha&village=Angul',
+      '/overlay?state=Odisha&village=Angul&size=2048&format=json',
+      '/api/mask?state=Odisha'
+    ]
+  });
 });
 
 const PORT = process.env.PORT || 3000;

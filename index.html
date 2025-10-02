@@ -42,8 +42,10 @@
       "esri/views/MapView",
       "esri/layers/MapImageLayer",
       "esri/layers/FeatureLayer",
-      "esri/layers/GroupLayer"
-    ], function(esriConfig, Map, MapView, MapImageLayer, FeatureLayer, GroupLayer) {
+      "esri/layers/GroupLayer",
+      "esri/layers/WebTileLayer",
+      "esri/Basemap"
+    ], function(esriConfig, Map, MapView, MapImageLayer, FeatureLayer, GroupLayer, WebTileLayer, Basemap) {
 
       // Allow CORS to the Living Atlas India server (guard in case property isn't initialized)
       (function enableCorsFor(host) {
@@ -72,6 +74,27 @@
           }
         } catch (_) { /* no-op */ }
       })("services5.arcgis.com");
+      (function enableCorsFor(host) {
+        try {
+          const req = esriConfig && esriConfig.request;
+          if (req) {
+            if (!Array.isArray(req.corsEnabledServers)) {
+              req.corsEnabledServers = [];
+            }
+            if (!req.corsEnabledServers.includes(host)) {
+              req.corsEnabledServers.push(host);
+            }
+          }
+        } catch (_) { /* no-op */ }
+      })("api.mapbox.com");
+
+      // Mapbox token and basemap layer
+      const MAPBOX_TOKEN = 'pk.eyJ1Ijoicm9oaXRiaGF0dDI0MzciLCJhIjoiY21mbWRia3NzMDBzMDJrc2J6cXg5aTBqeCJ9.d9SBYA8rSq4chTptEmx69w';
+      const mapboxLayer = new WebTileLayer({
+        url: `https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/256/{z}/{x}/{y}?access_token=${MAPBOX_TOKEN}`,
+        copyright: "© Mapbox © OpenStreetMap contributors"
+      });
+      const mapboxBasemap = new Basemap({ baseLayers: [mapboxLayer], title: "Mapbox Light" });
 
       const lulc = new MapImageLayer({
         url: "https://livingatlas.esri.in/server/rest/services/Sentinel_Lulc/MapServer",
@@ -134,7 +157,7 @@
       });
 
       const map = new Map({
-        basemap: "gray-vector",
+        basemap: mapboxBasemap,
         layers: [lulcRaw, lulcMaskedGroup]
       });
 
@@ -182,57 +205,72 @@
 
         const maskOn = document.getElementById("maskToggle").checked;
 
-        try {
-          const params = new URLSearchParams();
-          if (state) params.set('state', state);
-          if (name) params.set('village', name);
-          const resp = await fetch(`/api/mask?${params.toString()}`);
-          if (!resp.ok) {
-            const err = await resp.json().catch(() => ({}));
-            alert(err.error || 'Mask API failed');
-            return;
+        if (name) {
+          // Prioritize village when provided
+          const nameLike = "%" + sanitizeLikeValue(name.toLowerCase()) + "%";
+          let where = "LOWER(name) LIKE " + sqlQuote(nameLike);
+          if (state) {
+            const stateLike = "%" + sanitizeLikeValue(state.toLowerCase()) + "%";
+            where += " AND LOWER(state) LIKE " + sqlQuote(stateLike);
           }
-          const data = await resp.json();
-          const maskOn = document.getElementById("maskToggle").checked;
+          // Apply: show village mask, hide state mask
+          villageMask.definitionExpression = where;
+          stateMask.definitionExpression = "1=0";
 
-          // Apply the definitionExpression to show only the returned feature by its OBJECTID/FID if present
-          let oidField = data.level === 'state' ? 'FID' : 'objectid';
-          const idValue = data.feature?.attributes?.[oidField];
-          if (data.level === 'state') {
-            if (idValue != null) {
-              stateMask.definitionExpression = `${oidField} = ${idValue}`;
-            } else {
-              // fallback: just show all states (shouldn't happen)
-              stateMask.definitionExpression = '1=1';
+          // Zoom to village
+          const q = villageMask.createQuery();
+          q.where = where;
+          q.returnGeometry = true;
+          q.outFields = ["*"];
+          q.num = 1;
+          try {
+            const res = await villageMask.queryFeatures(q);
+            if (!res.features.length) {
+              alert("No matching village found. Try adjusting the name/state.");
+              return;
             }
-            villageMask.definitionExpression = '1=0';
-            stateMask.visible = !!maskOn;
-            villageMask.visible = false;
-          } else {
-            if (idValue != null) {
-              villageMask.definitionExpression = `${oidField} = ${idValue}`;
-            } else {
-              villageMask.definitionExpression = '1=1';
-            }
-            stateMask.definitionExpression = '1=0';
             villageMask.visible = !!maskOn;
-            stateMask.visible = false;
+            lulcMaskedGroup.visible = !!maskOn;
+            if (maskOn) {
+              // Hide raw to avoid double-draw
+              lulcRaw.visible = false;
+              document.getElementById("rawToggle").checked = false;
+            }
+            await view.goTo(res.features[0].geometry.extent.expand(1.2), { duration: 800 });
+          } catch (e) {
+            console.error(e);
+            alert("Village query failed. Check console.");
           }
-          lulcMaskedGroup.visible = !!maskOn && (villageMask.visible || stateMask.visible);
-          if (maskOn) {
-            lulcRaw.visible = false;
-            document.getElementById("rawToggle").checked = false;
-          }
+        } else {
+          // Only state provided: use state boundary mask (State_FSI exact match, case-insensitive)
+          const stateEq = sanitizeLikeValue(state.toLowerCase());
+          const where = "LOWER(State_FSI) = " + sqlQuote(stateEq);
+          stateMask.definitionExpression = where;
+          villageMask.definitionExpression = "1=0";
 
-          // Zoom to returned geometry extent
-          if (data.feature?.geometry) {
-            const g = data.feature.geometry;
-            // Esri JSON ring -> can compute extent roughly via view.goTo with geometry
-            await view.goTo({ target: g, scale: 24000 }, { duration: 800 }).catch(() => {});
+          // Zoom to state
+          const q = stateMask.createQuery();
+          q.where = where;
+          q.returnGeometry = true;
+          q.outFields = ["*"];
+          q.num = 1;
+          try {
+            const res = await stateMask.queryFeatures(q);
+            if (!res.features.length) {
+              alert("No matching state found. Check spelling.");
+              return;
+            }
+            stateMask.visible = !!maskOn;
+            lulcMaskedGroup.visible = !!maskOn;
+            if (maskOn) {
+              lulcRaw.visible = false;
+              document.getElementById("rawToggle").checked = false;
+            }
+            await view.goTo(res.features[0].geometry.extent.expand(1.2), { duration: 800 });
+          } catch (e) {
+            console.error(e);
+            alert("State query failed. Check console.");
           }
-        } catch (e) {
-          console.error(e);
-          alert('Failed to contact API. See console.');
         }
       }
 

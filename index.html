@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>LULC clipped by Village</title>
+  <meta name="viewport" content="initial-scale=1, maximum-scale=1, width=device-width" />
+  <link rel="stylesheet" href="https://js.arcgis.com/4.30/esri/themes/light/main.css" />
+  <!-- Inline favicon to avoid 404 for /favicon.ico -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%F0%9F%97%BA%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+  <style>
+    html, body, #viewDiv { height: 100%; width: 100%; margin: 0; padding: 0; }
+    .toolbar {
+      position: absolute; top: 10px; left: 10px; z-index: 10;
+      background: white; padding: 8px; border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+      display: flex; gap: 6px; align-items: center;
+    }
+    .toolbar input { width: 240px; }
+  </style>
+  <script src="https://js.arcgis.com/4.30/"></script>
+</head>
+<body>
+  <div class="toolbar">
+    <label for="village">Village name:</label>
+    <input id="village" type="text" placeholder="e.g. Abhana" />
+    <label for="state">State:</label>
+    <input id="state" type="text" placeholder="optional" />
+    <button id="applyBtn">Apply</button>
+    <button id="clearBtn">Clear</button>
+    <label style="margin-left:8px; display:flex; align-items:center; gap:4px;">
+      <input id="maskToggle" type="checkbox" checked /> Mask on
+    </label>
+    <label style="margin-left:8px; display:flex; align-items:center; gap:4px;">
+      <input id="rawToggle" type="checkbox" checked /> Show unmasked LULC
+    </label>
+  </div>
+  <div id="viewDiv"></div>
+
+  <script>
+    require([
+      "esri/config",
+      "esri/Map",
+      "esri/views/MapView",
+      "esri/layers/MapImageLayer",
+      "esri/layers/FeatureLayer",
+      "esri/layers/GroupLayer"
+    ], function(esriConfig, Map, MapView, MapImageLayer, FeatureLayer, GroupLayer) {
+
+      // Allow CORS to the Living Atlas India server (guard in case property isn't initialized)
+      (function enableCorsFor(host) {
+        try {
+          const req = esriConfig && esriConfig.request;
+          if (req) {
+            if (!Array.isArray(req.corsEnabledServers)) {
+              req.corsEnabledServers = [];
+            }
+            if (!req.corsEnabledServers.includes(host)) {
+              req.corsEnabledServers.push(host);
+            }
+          }
+        } catch (_) { /* no-op if API shape changes */ }
+      })("livingatlas.esri.in");
+      (function enableCorsFor(host) {
+        try {
+          const req = esriConfig && esriConfig.request;
+          if (req) {
+            if (!Array.isArray(req.corsEnabledServers)) {
+              req.corsEnabledServers = [];
+            }
+            if (!req.corsEnabledServers.includes(host)) {
+              req.corsEnabledServers.push(host);
+            }
+          }
+        } catch (_) { /* no-op */ }
+      })("services5.arcgis.com");
+
+      const lulc = new MapImageLayer({
+        url: "https://livingatlas.esri.in/server/rest/services/Sentinel_Lulc/MapServer",
+        sublayers: [{ id: 0, visible: true, minScale: 0, maxScale: 0 }],
+        opacity: 0.95,
+        imageFormat: "png32",
+        imageTransparency: true
+      });
+
+      // Raw (unmasked) LULC to ensure visibility even when mask is off
+      const lulcRaw = new MapImageLayer({
+        url: "https://livingatlas.esri.in/server/rest/services/Sentinel_Lulc/MapServer",
+        sublayers: [{ id: 0, visible: true, minScale: 0, maxScale: 0 }],
+        opacity: 0.85,
+        imageFormat: "png32",
+        imageTransparency: true,
+        listMode: "hide"
+      });
+
+      // Village mask layer: solid fill; blendMode masks only sibling layers below in the same group
+      const villageMask = new FeatureLayer({
+        url: "https://livingatlas.esri.in/server/rest/services/IAB2024/IAB_Village_2024/MapServer/0",
+        outFields: ["*"],
+        // start with no features selected
+        definitionExpression: "1=0",
+        visible: false,
+        renderer: {
+          type: "simple",
+          symbol: {
+            type: "simple-fill",
+            color: [255, 255, 255, 1],
+            outline: null
+          }
+        },
+        blendMode: "destination-in" // mask underlying sibling layers in the group
+      });
+
+      // State mask layer: used when only state is provided
+      const stateMask = new FeatureLayer({
+        url: "https://services5.arcgis.com/73n8CSGpSSyHr1T9/arcgis/rest/services/state_boundary/FeatureServer/0",
+        outFields: ["*"],
+        definitionExpression: "1=0",
+        visible: false,
+        renderer: {
+          type: "simple",
+          symbol: {
+            type: "simple-fill",
+            color: [255, 255, 255, 1],
+            outline: null
+          }
+        },
+        blendMode: "destination-in"
+      });
+
+      // Group ensures the mask only clips LULC, not the basemap
+      const lulcMaskedGroup = new GroupLayer({
+        // Order matters: lulc at bottom, then state mask, then village mask (village refines if visible)
+        layers: [lulc, stateMask, villageMask],
+        visible: false
+      });
+
+      const map = new Map({
+        basemap: "gray-vector",
+        layers: [lulcRaw, lulcMaskedGroup]
+      });
+
+      const view = new MapView({
+        container: "viewDiv",
+        map,
+        center: [78.9629, 22.5], // India approx
+        zoom: 5,
+        alphaCompositingEnabled: true
+      });
+
+      // Diagnostics: log LULC layer status
+  lulc.when(() => console.log("LULC (masked) layer loaded"), err => console.error("LULC (masked) layer failed to load", err));
+  lulcRaw.when(() => console.log("LULC (raw) layer loaded"), err => console.error("LULC (raw) layer failed to load", err));
+      view.when(() => {
+        view.on("layerview-create-error", (e) => {
+          console.error("LayerView create error", e);
+        });
+      });
+
+      // Helper: safely quote strings for SQL where clause
+      function sqlQuote(s) {
+        return "'" + String(s).replace(/'/g, "''") + "'";
+      }
+
+      function sanitizeLikeValue(s) {
+        // Remove SQL LIKE wildcards so user input doesn't break the pattern
+        return String(s).replace(/[\%_]/g, "");
+      }
+
+      async function applyVillageFilter() {
+        const name = document.getElementById("village").value.trim();
+        const state = document.getElementById("state").value.trim();
+
+        if (!name && !state) {
+          alert("Enter at least a State or a Village name.");
+          return;
+        }
+
+        // Build a flexible WHERE clause using LIKE to tolerate minor spelling/case differences
+        // Prefer an exact code filter if you have it (e.g., lgd_villagecode = 123456)
+        // Always start by hiding both masks to avoid blank clipping
+        villageMask.visible = false;
+        stateMask.visible = false;
+
+        const maskOn = document.getElementById("maskToggle").checked;
+
+        try {
+          const params = new URLSearchParams();
+          if (state) params.set('state', state);
+          if (name) params.set('village', name);
+          const resp = await fetch(`/api/mask?${params.toString()}`);
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            alert(err.error || 'Mask API failed');
+            return;
+          }
+          const data = await resp.json();
+          const maskOn = document.getElementById("maskToggle").checked;
+
+          // Apply the definitionExpression to show only the returned feature by its OBJECTID/FID if present
+          let oidField = data.level === 'state' ? 'FID' : 'objectid';
+          const idValue = data.feature?.attributes?.[oidField];
+          if (data.level === 'state') {
+            if (idValue != null) {
+              stateMask.definitionExpression = `${oidField} = ${idValue}`;
+            } else {
+              // fallback: just show all states (shouldn't happen)
+              stateMask.definitionExpression = '1=1';
+            }
+            villageMask.definitionExpression = '1=0';
+            stateMask.visible = !!maskOn;
+            villageMask.visible = false;
+          } else {
+            if (idValue != null) {
+              villageMask.definitionExpression = `${oidField} = ${idValue}`;
+            } else {
+              villageMask.definitionExpression = '1=1';
+            }
+            stateMask.definitionExpression = '1=0';
+            villageMask.visible = !!maskOn;
+            stateMask.visible = false;
+          }
+          lulcMaskedGroup.visible = !!maskOn && (villageMask.visible || stateMask.visible);
+          if (maskOn) {
+            lulcRaw.visible = false;
+            document.getElementById("rawToggle").checked = false;
+          }
+
+          // Zoom to returned geometry extent
+          if (data.feature?.geometry) {
+            const g = data.feature.geometry;
+            // Esri JSON ring -> can compute extent roughly via view.goTo with geometry
+            await view.goTo({ target: g, scale: 24000 }, { duration: 800 }).catch(() => {});
+          }
+        } catch (e) {
+          console.error(e);
+          alert('Failed to contact API. See console.');
+        }
+      }
+
+      function clearFilter() {
+        villageMask.definitionExpression = "1=0";
+        stateMask.definitionExpression = "1=0";
+        villageMask.visible = false;
+        stateMask.visible = false;
+        lulcMaskedGroup.visible = false;
+      }
+
+      // Mask toggle handler
+      document.getElementById("maskToggle").addEventListener("change", () => {
+        const on = document.getElementById("maskToggle").checked;
+        // Only show masks if they currently have a filter other than 1=0
+        villageMask.visible = on && villageMask.definitionExpression !== "1=0";
+        stateMask.visible = on && stateMask.definitionExpression !== "1=0";
+        lulcMaskedGroup.visible = on && (villageMask.visible || stateMask.visible);
+      });
+
+      // Raw toggle handler
+      document.getElementById("rawToggle").addEventListener("change", () => {
+        lulcRaw.visible = document.getElementById("rawToggle").checked;
+      });
+
+      document.getElementById("applyBtn").addEventListener("click", applyVillageFilter);
+      document.getElementById("clearBtn").addEventListener("click", clearFilter);
+    });
+  </script>
+</body>
+</html>

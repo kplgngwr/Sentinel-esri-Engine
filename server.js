@@ -181,6 +181,46 @@ async function overlayHandler(req, res) {
 app.get('/api/overlay', overlayHandler);
 app.get('/overlay', overlayHandler); // alias for convenience
 
+// Health check: verifies sharp and upstream ArcGIS services
+app.get('/health', async (req, res) => {
+  const start = Date.now();
+  const results = { ok: true };
+  // sharp self-check
+  try {
+    await sharp({ create: { width: 1, height: 1, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
+    results.sharp = 'ok';
+  } catch (e) {
+    results.ok = false;
+    results.sharp = `error: ${e.message}`;
+  }
+
+  // small helper with timeout
+  async function probe(url, ms = 3000) {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), ms);
+    try {
+      const r = await fetch(url, { signal: c.signal });
+      clearTimeout(t);
+      return { status: r.status, ok: r.ok };
+    } catch (e) {
+      return { status: 0, ok: false, error: e.name || e.message };
+    }
+  }
+  const [village, state, lulc] = await Promise.all([
+    probe('https://livingatlas.esri.in/server/rest/services/IAB2024/IAB_Village_2024/MapServer/0?f=pjson'),
+    probe('https://services5.arcgis.com/73n8CSGpSSyHr1T9/arcgis/rest/services/state_boundary/FeatureServer/0?f=pjson'),
+    probe('https://livingatlas.esri.in/server/rest/services/Sentinel_Lulc/MapServer?f=pjson')
+  ]);
+  results.services = { village, state, lulc };
+  if (!village.ok || !state.ok || !lulc.ok) results.ok = false;
+
+  results.uptimeSec = process.uptime();
+  results.durationMs = Date.now() - start;
+  results.now = new Date().toISOString();
+  results.node = process.version;
+  res.status(results.ok ? 200 : 503).json(results);
+});
+
 // API Root
 app.get('/', (req, res) => {
   res.json({
@@ -189,7 +229,8 @@ app.get('/', (req, res) => {
       '/overlay?state=Odisha',
       '/overlay?state=Odisha&village=Angul',
       '/overlay?state=Odisha&village=Angul&size=2048&format=json',
-      '/api/mask?state=Odisha'
+      '/api/mask?state=Odisha',
+      '/health'
     ]
   });
 });
